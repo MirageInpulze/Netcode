@@ -1,123 +1,82 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/types.h>
 #include <sys/socket.h>
-#include <string.h>
 #include <unistd.h>
+#include <netdb.h>
 #include <arpa/inet.h>
-#include <sys/wait.h>
-#include <signal.h>
+#include <string.h>
+#include <pthread.h>
 
-#define BUF_SIZE 1024
-#define NUMBER_PROCESSES 8
-#define NUMBER_CLIENTS 10
+void *thread_proc(void *);
 
-int main(int argc, char *argv[])
+int main()
 {
-    // Kiểm tra đầu vào
-    if (argc != 2)
-    {
-        printf("Usage: %s <port>\n", argv[0]);
-        exit(EXIT_FAILURE);
-    }
-
-    // Tạo socket
-    int server = socket(AF_INET, SOCK_STREAM, 0);
-    if (server < 0)
+    // Create a socket for the server
+    int listener = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+    if (listener == -1)
     {
         perror("socket() failed");
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
-    // Thiết lập địa chỉ server
-    struct sockaddr_in server_addr;
-    memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_addr.s_addr = htonl(INADDR_ANY);
-    server_addr.sin_port = htons(atoi(argv[1]));
+    // Set up the server address
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_addr.s_addr = htonl(INADDR_ANY);
+    addr.sin_port = htons(9000);
 
-    // Gán địa chỉ server vào socket
-    if (bind(server, (struct sockaddr *)&server_addr, sizeof(server_addr)) < 0)
+    // Bind the socket to the server address
+    if (bind(listener, (struct sockaddr *)&addr, sizeof(addr)))
     {
         perror("bind() failed");
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
-    // Lắng nghe kết nối
-    if (listen(server, NUMBER_CLIENTS) < 0)
+    // Listen for incoming connections
+    if (listen(listener, 5))
     {
         perror("listen() failed");
-        exit(EXIT_FAILURE);
+        return 1;
     }
 
-    printf("Waiting for new client on %s:%d\n",
-           inet_ntoa(server_addr.sin_addr),
-           ntohs(server_addr.sin_port));
+    int num_threads = 8;
+    pthread_t thread_id;
+    for (int i = 0; i < num_threads; i++)
+        pthread_create(&thread_id, NULL, thread_proc, &listener);
 
-    // Tạo buffer để nhận dữ liệu
-    char buf[BUF_SIZE];
+    pthread_join(thread_id, NULL);
 
-    // Tạo các process
-    for (int i = 0; i < NUMBER_PROCESSES; i++)
-    {
-        if (fork() == 0)
-        {
-            while (1)
-            {
-                // Chấp nhận kết nối
-                struct sockaddr_in client_addr;
-                memset(&client_addr, 0, sizeof(client_addr));
-                socklen_t client_addr_len = sizeof(client_addr);
-                int client = accept(server, (struct sockaddr *)&client_addr, &client_addr_len);
-                if (client < 0)
-                {
-                    perror("accept() failed");
-                    exit(EXIT_FAILURE);
-                }
-                printf("New client from %s:%d accepted in process %d:%d\n",
-                       inet_ntoa(client_addr.sin_addr),
-                       ntohs(client_addr.sin_port), client, getpid());
-
-                // Nhận dữ liệu từ client
-                int len = recv(client, buf, BUF_SIZE, 0);
-                if (len < 0)
-                {
-                    perror("recv() failed");
-                    exit(EXIT_FAILURE);
-                }
-                else if (len == 0)
-                {
-                    printf("Client from %s:%d disconnected\n",
-                           inet_ntoa(client_addr.sin_addr),
-                           ntohs(client_addr.sin_port));
-                    close(client);
-                    continue;
-                }
-                else
-                {
-                    buf[strcspn(buf, "\n")] = 0; 
-                    printf("Received %d bytes from client %d: %s\n", len, client, buf);
-
-                    // Gửi dữ liệu cho client
-                    char *msg = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Xin chao cac ban</ h1></ body></ html> \n";
-                    if (send(client, msg, strlen(msg), 0) < 0)
-                    {
-                        perror("send() failed");
-                        exit(EXIT_FAILURE);
-                    }
-                }
-
-                // Đóng kết nối
-                close(client);
-            }
-        }
-    }
-
-    // Đợi tất cả các process con kết thúc
-    getchar();
-    killpg(0, SIGKILL);
-
-    // Đóng socket
-    close(server);
+    // Close the listener socket
+    close(listener);
 
     return 0;
+}
+
+// Thread procedure for handling a client
+void *thread_proc(void *param)
+{
+    int listener = *(int *)param;
+    char buf[256];
+
+    while (1)
+    {
+        // Accept a new client connection
+        int client = accept(listener, NULL, NULL);
+        printf("New client accepted: %d\n", client);
+
+        // Receive data from the client
+        int ret = recv(client, buf, sizeof(buf), 0);
+        if (ret <= 0)
+            continue;
+        buf[ret] = 0;
+        printf("Received from %d: %s\n", client, buf);
+
+        // Trả lại kết quả cho client
+        char *msg = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n<html><body><h1>Xin chao cac ban</h1></body></html>";
+        send(client, msg, strlen(msg), 0);
+
+        // Đóng kết nối
+        close(client);
+    }
 }
